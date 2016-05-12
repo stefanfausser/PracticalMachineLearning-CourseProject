@@ -1,0 +1,120 @@
+---
+title: "Activity Prediction"
+author: "Stefan Faußer"
+date: "11.05.2016"
+output: html_document
+---
+
+# Summary
+
+In this document, activities are predicted from accelerometers on the belt, forearm, arm, and dumbell of six participants. The data is from the Weight Lifting Exercises dataset from <http://groupware.les.inf.puc-rio.br/har>. The participipants were asked to perform five different fashions, ten repetitions, of the Unilateral Dumbbell Biceps Curl. These are: According to specification (A), throwing elbows to front (B), lifting halfway (C), lowering halfway (D), throwing hips to front (E).
+
+Summarized, out of the evaluated models, the random forests performed best with an **out-of-sample accuracy** of more than $0.99$, followed by stochastic gradient boosting ($0.96$).
+
+# Preprocessing
+
+In this section, the data preprocessing steps are described.
+
+```{r}
+library(caret, quietly=TRUE)
+library(corrplot, quietly=TRUE)
+library(doMC, quietly=TRUE)
+registerDoMC(cores = 6) # allow parallel processing with up to six cores
+trainingFile <- "pml-training.csv"
+trainData <- read.csv(trainingFile, na.strings = c("NA", ""))
+```
+
+**Predictor selection:** For reducing the complexity of the model, predictors are removed from the dataset according to the following critera:
+
+- Irrelevant predictors. This includes: integer sequence (`X`), names (`user_name`), timestamps, windows, data columns: `1:7`.
+- Predictors that have more than 90% of missing values (`NA`).
+- Predictors with near zero variance.
+
+```{r}
+cols <- 1:7 # names, dates, timestamps
+# get predictors that have more than 90% NAs
+cols <- c(cols, which(colSums(is.na(trainData)) > nrow(trainData) * 0.9))
+# get predictors with near zero variance
+cols <- c(cols, nearZeroVar(trainData))
+cols <- unique(cols)
+trainData <- trainData[,-cols] # remove the predictors
+print(sort(cols)) # outputs the removed predictors
+```
+
+## Collinearity
+
+```{r}
+corrs <- cor(trainData[,-ncol(trainData)])
+corrplot(corrs, order = "hclust")
+```
+
+From above correlation plot we observe that there are some variables that are strongly correlated ($\geq 0.9$, red). These variables are removed for reducing the model complexity.
+
+```{r}
+cols <- findCorrelation(corrs, cutoff = 0.9)
+trainData <- trainData[,-cols] # remove the predictors
+print(sort(cols)) # outputs the removed predictors
+```
+
+# Model building
+
+- The training dataset (`pml-training.csv`) is splitted into training ($0.6$ of the data) and testing using stratified sampling.
+
+```{r}
+set.seed(107)
+inTrain <- createDataPartition(y = trainData$classe, p = 0.6, list = FALSE)
+training <- trainData[inTrain,]
+testing <- trainData[-inTrain,]
+```
+
+- The training dataset is used for building the model, $5$-fold cross validation with three repeats.
+- The problem is a classification problem, for the outcome (`classe`) is categorical with five classes.
+- Out of the popular classification methods, the two top performing methods random forests (`rf`) and stochastic gradient boosting (`gbm`) are evaluated.
+- Note that feature normalization is unnecessary for decision trees (`gbm` and `svmPoly`).
+- The evaluated criteria is the **accuracy** of the model. The error is, thus, $1 - accuracy$.
+
+**Random forests:**
+
+```{r, cache = TRUE}
+set.seed(107)
+rfFit <- train(classe ~.,
+               data = training,
+               method = "rf",
+               trControl = trainControl(method = "repeatedcv", number = 5, repeats = 3))
+rfCmTrain <- confusionMatrix(data = predict(rfFit, training), training$classe)
+rfCmTrain
+1 - as.vector(rfCmTrain$overall['Accuracy']) # in-sample error
+```
+
+**Stochastic gradient boosting with decision trees:**
+
+```{r, cache = TRUE}
+set.seed(107)
+gbmFit <- train(classe ~.,                
+                data = training,
+                method = "gbm",
+                verbose = FALSE,               
+                trControl = trainControl(method = "repeatedcv", number = 5, repeats = 3))
+gbmCmTrain <- confusionMatrix(data = predict(gbmFit, training), training$classe)
+gbmCmTrain
+1 - as.vector(gbmCmTrain$overall['Accuracy']) # in-sample error
+```
+
+- The random forest (`rf`) model performed best on the training dataset with an **in-sample accuracy** of $1.00$, followed by the stochastic gradient descent model (`gbm`, $0.97$). Note that these are optimistic values, see section *out-of-sample error* below.
+
+# Out-of-sample error and model selection
+
+- The testing dataset (see above) is used for retrieving the **out-of-sample errors**.
+- The **out-of-sample errors** are expected to be higher than the **in-sample errors** (training errors), see section *Model building and selection* above, because the models were trained with the training data and are, thus, biased towards the training data.
+- The model with the lowest **out-of-sample error** is considered to be the final model.
+
+```{r, cache = TRUE}
+rfCmTest <- confusionMatrix(data = predict(rfFit, testing), testing$classe) # random forests
+rfCmTest
+1 - as.vector(rfCmTest$overall['Accuracy']) # out-of-sample error
+gbmCmTest <- confusionMatrix(data = predict(gbmFit, testing), testing$classe) # stochastic gradient boosting
+gbmCmTest
+1 - as.vector(gbmCmTest$overall['Accuracy']) # out-of-sample error
+```
+
+- The random forest (`rf`) model has an **out-of-sample accuracy** of more than $0.99$ on the testing dataset, followed by the stochastic gradient descent model (`gbm`, $0.96$).
